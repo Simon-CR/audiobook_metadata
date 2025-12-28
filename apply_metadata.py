@@ -6,7 +6,7 @@ import time
 from pathlib import Path
 from google import genai
 from google.genai import types
-from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type, RetryError
 
 # Supported audio extensions for audiobooks
 AUDIO_EXTENSIONS = {'.m4b', '.mp3', '.m4a', '.flac', '.ogg'}
@@ -99,6 +99,12 @@ def process_file(client, file_path, dry_run=False):
         time.sleep(1) 
         return True
 
+    except RetryError as e:
+        print(f"  Error: Failed after retries for {path.name}.")
+        # Try to print the cause if available
+        if hasattr(e, 'last_attempt') and e.last_attempt.exception():
+            print(f"  Reason: {e.last_attempt.exception()}")
+        return False
     except Exception as e:
         print(f"  Error processing {path.name}: {e}")
         return False
