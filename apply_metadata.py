@@ -7,6 +7,7 @@ import shutil
 import time
 import datetime
 import concurrent.futures
+import requests
 from pathlib import Path
 
 # Supported audio extensions for audiobooks
@@ -99,7 +100,52 @@ def extract_json(text):
             return None
     return None
 
-def process_file(file_path, dry_run=False):
+def fetch_abs_library_map(url, token):
+    """Fetches all library items and maps absolute folder path to Item ID."""
+    print(f"Connecting to Audiobookshelf at {url}...")
+    headers = {"Authorization": f"Bearer {token}"}
+    mapping = {}
+    
+    try:
+        # 1. Get libraries
+        libs_resp = requests.get(f"{url}/api/libraries", headers=headers)
+        libs_resp.raise_for_status()
+        libraries = libs_resp.json().get('libraries', [])
+        
+        for lib in libraries:
+            lib_id = lib['id']
+            # 2. Get items for library (simplified, might need pagination for huge libs but usually one big fetch works)
+            items_resp = requests.get(f"{url}/api/libraries/{lib_id}/items", headers=headers)
+            items_resp.raise_for_status()
+            items = items_resp.json().get('results', [])
+            
+            for item in items:
+                # ABS stores path. We need to normalize it to match local script usage.
+                # Assuming script runs on same filesystem as ABS or mounted same way.
+                # item['path'] is the folder path
+                if 'path' in item:
+                    # Normalize: resolve symlinks/absolute
+                    abs_path = str(Path(item['path']).resolve())
+                    mapping[abs_path] = item['id']
+                    
+        print(f"Mapped {len(mapping)} Audiobookshelf items.")
+        return mapping
+    except Exception as e:
+        print(f"Error fetching ABS library: {e}")
+        return {}
+
+def trigger_abs_scan(url, token, item_id):
+    """Triggers a scan for a specific item ID."""
+    try:
+        requests.post(f"{url}/api/items/{item_id}/scan", headers={"Authorization": f"Bearer {token}"}, timeout=5)
+        # print(f"  [API] Triggered scan for item {item_id}")
+        return True
+    except Exception as e:
+        print(f"  [API] Failed to trigger scan: {e}")
+        return False
+
+def process_file(file_path, dry_run=False, abs_config=None):
+    # abs_config is a dict: {'url': str, 'token': str, 'map': dict}
     path = Path(file_path)
     directory = path.parent
     metadata_path = directory / "metadata.json"
@@ -142,6 +188,17 @@ def process_file(file_path, dry_run=False):
             json.dump(metadata, f, indent=2, ensure_ascii=False)
         print(f"  Saved metadata.json")
         
+        # Trigger ABS Scan if configured
+        if abs_config and not dry_run:
+            dir_abs = str(directory.resolve())
+            if dir_abs in abs_config['map']:
+                item_id = abs_config['map'][dir_abs]
+                trigger_abs_scan(abs_config['url'], abs_config['token'], item_id)
+                print("  [API] Scan triggered")
+            else:
+                # Perhaps the folder isn't in ABS yet, or path mismatch
+                pass
+        
     return True
 
 def main():
@@ -149,6 +206,8 @@ def main():
     parser.add_argument("directory", nargs="?", default=".", help="Root directory to scan (default: current dir)")
     parser.add_argument("--dry-run", action="store_true", help="Print metadata to console instead of writing files")
     parser.add_argument("--limit", type=int, default=0, help="Limit the number of books to process (0 for no limit)")
+    parser.add_argument("--abs-url", help="Audiobookshelf URL (e.g. http://localhost:13378)")
+    parser.add_argument("--abs-token", help="Audiobookshelf API Token")
     
     args = parser.parse_args()
     
@@ -156,6 +215,17 @@ def main():
     
     root_dir = Path(args.directory).resolve()
     print(f"Scanning directory: {root_dir}")
+    
+    abs_config = None
+    if args.abs_url and args.abs_token:
+        # Normalize URL (remove trailing slash)
+        clean_url = args.abs_url.rstrip('/')
+        item_map = fetch_abs_library_map(clean_url, args.abs_token)
+        abs_config = {
+            'url': clean_url, 
+            'token': args.abs_token,
+            'map': item_map
+        }
     
     if args.dry_run:
         print("Running in DRY RUN mode. No files will be modified.")
@@ -222,7 +292,7 @@ def main():
         processed_final = 0
         with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
             # Submit all tasks
-            future_to_file = {executor.submit(process_file, f, args.dry_run): f for f in tasks}
+            future_to_file = {executor.submit(process_file, f, args.dry_run, abs_config): f for f in tasks}
             
             for future in concurrent.futures.as_completed(future_to_file):
                 f = future_to_file[future]
