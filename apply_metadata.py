@@ -19,13 +19,13 @@ def check_dependencies():
 
 def generate_metadata_prompt(filename, folder_name):
     return f"""
-    Search Audible.com for the audiobook with this filename and folder name.
-    
-    Filename: "{filename}"
-    Folder: "{folder_name}"
+    1. Identify the language of the audiobook based on the filename: "{filename}" and folder: "{folder_name}".
+    2. If the book appears to be French, search **Audible.fr**.
+    3. Otherwise, search **Audible.com**.
+    4. If the book is not found on Audible, fallback to using general Google Search data or your internal knowledge to find the correct metadata.
     
     Extract the metadata and provide it in this specific JSON format for Audiobookshelf. 
-    Ensure the description and narrators are accurate from the Audible listing.
+    Ensure the description and narrators are accurate.
 
     JSON Schema:
     {{
