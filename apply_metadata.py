@@ -136,7 +136,7 @@ def process_file(file_path, dry_run=False):
 
     if dry_run:
         print(f"  [DRY RUN] Generated metadata for {path.name}:")
-        print(json.dumps(metadata, indent=2))
+        print(json.dumps(metadata, indent=2, ensure_ascii=False))
     else:
         with open(metadata_path, 'w', encoding='utf-8') as f:
             json.dump(metadata, f, indent=2, ensure_ascii=False)
