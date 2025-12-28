@@ -4,6 +4,8 @@ import json
 import argparse
 import subprocess
 import shutil
+import time
+import datetime
 import concurrent.futures
 from pathlib import Path
 
@@ -109,7 +111,20 @@ def process_file(file_path, dry_run=False):
     print(f"Processing: {path.name}...")
     
     prompt = generate_metadata_prompt(path.name, directory.name)
+    
+    start_time = time.time()
     raw_output = call_gemini_cli(prompt)
+    duration = time.time() - start_time
+    
+    # Log the interaction
+    log_entry = f"--- {datetime.datetime.now()} | {path.name} | took {duration:.2f}s ---\nPrompt: ...\nOutput:\n{raw_output}\n\n"
+    try:
+        with open("processing.log", "a", encoding="utf-8") as log_file:
+            log_file.write(log_entry)
+    except Exception as e:
+        print(f"  Warning: Failed to write log: {e}")
+
+    print(f"  Gemini response received in {duration:.2f}s")
     
     metadata = extract_json(raw_output)
     
