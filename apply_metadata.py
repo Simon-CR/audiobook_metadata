@@ -162,68 +162,76 @@ def main():
     if args.limit > 0:
         print(f"Limit set to {args.limit} books.")
 
-    processed_count = 0
-    
+    items_checked = 0
     
     # Collect all audio files first
     tasks = []
     for root, dirs, files in os.walk(root_dir):
         audio_files = [f for f in files if Path(f).suffix.lower() in AUDIO_EXTENSIONS]
+        
         if not audio_files:
             continue
             
-        if not audio_files:
-            continue
-            
+        items_checked += 1
+        
         # Determine if this folder contains a single book (split into parts) or multiple different books
         if len(audio_files) > 1:
-            common_prefix = os.path.commonprefix([f.name for f in audio_files])
+            common_prefix = os.path.commonprefix(audio_files)
             
             # Heuristic: 
-            # 1. If substantial common prefix (>4 chars), likely a single book (e.g. "Harry Potter - Ch1", "Harry Potter - Ch2")
-            # 2. If filenames are short/numeric (e.g. "01.mp3", "Start.mp3"), likely a single book unless folder is "Misc"
-            # 3. If folder name matches the start of files, likely a single book.
+            # 1. Common prefix > 3 chars
+            # 2. Files appear to be tracks (numeric start, "Track", etc.)
+            # 3. Folder name is in filenames
             
             is_single_book = False
             if len(common_prefix) > 3:
                 is_single_book = True
-            elif all(len(f.stem) < 5 or f.stem.replace('_', '').replace('-', '').isdigit() for f in audio_files):
-                # Small filenames like 01.mp3, 1-01.mp3
-                is_single_book = True
+            elif all(f[0].isdigit() for f in audio_files): 
+                 is_single_book = True
+            elif all(f.lower().startswith('track') for f in audio_files):
+                 is_single_book = True
+            elif all(Path(root).name.lower() in f.lower() for f in audio_files):
+                 is_single_book = True
                 
             if not is_single_book:
-                msg = f"Skipping (mixed content/dump folder?): {Path(root).name} contains {len(audio_files)} files with no common prefix."
+                msg = f"Skipping (mixed content?): {Path(root).name} contains {len(audio_files)} files with no common prefix."
                 print(msg)
                 try:
                      with open("processing.log", "a", encoding="utf-8") as log_file:
                         log_file.write(f"--- {datetime.datetime.now()} | {Path(root).name} | SKIPPED (Mixed content) ---\n")
                 except: pass
+                
+                # Check limit including skipped items
+                if args.limit > 0 and items_checked >= args.limit:
+                    print(f"Limit of {args.limit} books checked (processed or skipped). Stopping scan.")
+                    break
                 continue
         
-        # For multi-part books, the first file + folder name is usually sufficient context
         first_audio = audio_files[0]
         full_path = Path(root) / first_audio
         tasks.append(full_path)
         
-    print(f"Found {len(tasks)} potential books.")
+        if args.limit > 0 and items_checked >= args.limit:
+             print(f"Limit of {args.limit} books checked (processed or skipped). Stopping scan.")
+             break
+        
+    print(f"Found {len(tasks)} valid books to process.")
     
     # Process in parallel
-    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
-        # Submit all tasks
-        future_to_file = {executor.submit(process_file, f, args.dry_run): f for f in tasks}
-        
-        for future in concurrent.futures.as_completed(future_to_file):
-            f = future_to_file[future]
-            try:
-                success = future.result()
-                if success:
-                    processed_count += 1
-                    if args.limit > 0 and processed_count >= args.limit:
-                        print(f"Limit of {args.limit} books reached. Stopping.")
-                        executor.shutdown(wait=False, cancel_futures=True)
-                        break
-            except Exception as exc:
-                print(f"Generated an exception for {f}: {exc}")
+    if tasks:
+        processed_final = 0
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+            # Submit all tasks
+            future_to_file = {executor.submit(process_file, f, args.dry_run): f for f in tasks}
+            
+            for future in concurrent.futures.as_completed(future_to_file):
+                f = future_to_file[future]
+                try:
+                    success = future.result()
+                    if success:
+                        processed_final += 1
+                except Exception as exc:
+                    print(f"Generated an exception for {f}: {exc}")
 
 if __name__ == "__main__":
     main()
