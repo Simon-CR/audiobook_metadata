@@ -11,7 +11,13 @@ import requests
 from pathlib import Path
 
 # Supported audio extensions for audiobooks
-AUDIO_EXTENSIONS = {'.m4b', '.mp3', '.m4a', '.flac', '.ogg', '.wav', '.wma', '.aac'}
+# Valid audio extensions
+AUDIO_EXTENSIONS = {'.m4b', '.mp3', '.m4a', '.flac', '.aac', '.ogg', '.wav'}
+
+# Log Directory Setup
+SCRIPT_DIR = Path(__file__).parent.resolve()
+LOG_DIR = SCRIPT_DIR / "logs"
+LOG_DIR.mkdir(exist_ok=True)
 
 def check_dependencies():
     """Checks if 'gemini' CLI is installed."""
@@ -46,8 +52,15 @@ def generate_metadata_prompt(filename, folder_name):
         }}
       ],
       "genres": ["List", "of", "Genres"],
-      "language": "en"
+      "language": "en",
+      "confidence": 0.0,
+      "confidence_reason": "String"
     }}
+    
+    IMPORTANT:
+    - If you cannot find a specific match for this EXACT book/author, set "confidence" to 0.1 and provide the reason.
+    - If you are guessing based on the filename only, set "confidence" to 0.4.
+    - Do NOT make up data.
     
     Output ONLY the JSON block. Do not include markdown formatting like ```json ... ``` if possible, or I will filter it out.
     """
@@ -128,10 +141,16 @@ def fetch_abs_library_map(url, token):
                 # item['path'] is the folder path
                 if 'path' in item:
                     # Normalize: resolve symlinks/absolute
-                    abs_path = str(Path(item['path']).resolve())
-                    mapping[abs_path] = item # Store full item object
+                    # ABS server path might differ from local mount. 
+                    # Use Basename as Key for robust matching
+                    abs_path_obj = Path(item['path'])
+                    folder_name = abs_path_obj.name
+                    mapping[folder_name] = item 
                     
         print(f"Mapped {len(mapping)} Audiobookshelf items.")
+        if mapping:
+            sample_key = next(iter(mapping))
+            print(f"DEBUG: Sample ABS path mapping (basename): '{sample_key}'")
         return mapping
     except Exception as e:
         print(f"Error fetching ABS library: {e}")
@@ -147,13 +166,18 @@ def trigger_abs_scan(url, token, item_id):
         print(f"  [API] Failed to trigger scan: {e}")
         return False
 
-def process_file(file_path, dry_run=False, abs_config=None, model=None):
+def process_file(file_path, dry_run=False, abs_config=None, model=None, force=False):
     # abs_config is a dict: {'url': str, 'token': str, 'map': dict}
     path = Path(file_path)
     directory = path.parent
+    
+    # Debug info for ABS mapping
+    if abs_config:
+        dir_abs = str(directory.resolve())
+        # print(f"DEBUG: Checking map for '{dir_abs}'")
     metadata_path = directory / "metadata.json"
     
-    if metadata_path.exists() and not dry_run:
+    if metadata_path.exists() and not dry_run and not force:
         print(f"Skipping (metadata exists): {path.name}")
         return False
 
@@ -165,38 +189,65 @@ def process_file(file_path, dry_run=False, abs_config=None, model=None):
     raw_output = call_gemini_cli(prompt, model=model)
     duration = time.time() - start_time
     
-    # Log the interaction
-    model_name = model if model else "default"
-    log_entry = f"--- {datetime.datetime.now()} | {path.name} | Model: {model_name} | took {duration:.2f}s ---\nPrompt: ...\nOutput:\n{raw_output}\n\n"
-    try:
-        with open("processing.log", "a", encoding="utf-8") as log_file:
-            log_file.write(log_entry)
-    except Exception as e:
-        print(f"  Warning: Failed to write log: {e}")
-
+    # We will log to specific files based on outcome later.
     print(f"  Gemini response received in {duration:.2f}s")
     
     metadata = extract_json(raw_output)
     
     if not metadata:
         print(f"  Failed to extract valid JSON from Gemini output for {path.name}")
+        try:
+             with open(LOG_DIR / "other_errors.log", "a", encoding="utf-8") as err_log:
+                err_log.write(f"{datetime.datetime.now()} | {path.name} | JSON Extraction Failed | Raw output length: {len(raw_output)}\n")
+        except: pass
         if raw_output:
             print(f"  Raw Output Preview: {raw_output[:200]}...")
+        return False
+        
+    # Check Confidence
+    confidence = metadata.get('confidence', 0.5) # Default to 0.5 if missing (legacy/fallback)
+    confidence = float(confidence)
+    reason = metadata.get('confidence_reason', 'No reason provided')
+    
+    print(f"  Confidence: {confidence} | Reason: {reason}")
+    
+    if confidence < 0.60:
+        print(f"  [SKIP] Confidence too low ({confidence}). Reason: {reason}")
+        try:
+             with open(LOG_DIR / "failed_to_match.log", "a", encoding="utf-8") as skip_log:
+                skip_log.write(f"{datetime.datetime.now()} | {path.name} | Confidence: {confidence} | Reason: {reason}\n")
+        except: pass
         return False
 
     if dry_run:
         print(f"  [DRY RUN] Generated metadata for {path.name}:")
         print(json.dumps(metadata, indent=2, ensure_ascii=False))
+        # Log dry run success to processed log
+        try:
+            with open(LOG_DIR / "processed.log", "a", encoding="utf-8") as proc_log:
+                proc_log.write(f"{datetime.datetime.now()} | {path.name} | DRY RUN | Confidence: {confidence}\n")
+        except: pass
     else:
+        # Log success
+        try:
+            with open(LOG_DIR / "processed.log", "a", encoding="utf-8") as proc_log:
+                proc_log.write(f"{datetime.datetime.now()} | {path.name} | SAVED | Confidence: {confidence}\n")
+        except: pass
+        
+        # Remove confidence fields before saving to file (not standard ABS format)
+        meta_to_save = metadata.copy()
+        meta_to_save.pop('confidence', None)
+        meta_to_save.pop('confidence_reason', None)
+        
         with open(metadata_path, 'w', encoding='utf-8') as f:
-            json.dump(metadata, f, indent=2, ensure_ascii=False)
+            json.dump(meta_to_save, f, indent=2, ensure_ascii=False)
         print(f"  Saved metadata.json")
         
         # Trigger ABS Scan if configured
-        if abs_config: # Removed 'and not dry_run' as dry_run is handled by the outer if/else
-            dir_abs = str(directory.resolve())
-            if dir_abs in abs_config['map']:
-                item = abs_config['map'][dir_abs]
+        if abs_config:
+            folder_name = directory.name
+            if folder_name in abs_config['map']:
+                item = abs_config['map'][folder_name]
                 item_id = item['id']
                 
                 # Check current state
@@ -205,20 +256,32 @@ def process_file(file_path, dry_run=False, abs_config=None, model=None):
                 cur_author = current_meta.get('author', '[Unknown]')
                 
                 new_title = metadata.get('title', '[Unknown]')
-                new_author = ", ".join(metadata.get('authors', ['[Unknown]'])) # Assuming authors is a list
+                # Assuming authors is a list, join them for comparison
+                new_auth_list = metadata.get('authors', [])
+                new_author = ", ".join(new_auth_list) if isinstance(new_auth_list, list) else str(new_auth_list)
                 
                 print(f"  [ABS Comparison] ID: {item_id}")
-                print(f"    Current ABS: Title='{cur_title}' | Author='{cur_author}'")
-                print(f"    New Upload:  Title='{new_title}' | Author='{new_author}'")
                 
-                if cur_title != new_title or cur_author != new_author:
-                    print("    -> DETECTED DIFF: Updating metadata on server.")
+                comparison_msg = (
+                    f"--- COMPARISON {datetime.datetime.now()} ---\n"
+                    f"Book: {folder_name}\n"
+                    f"Current ABS: Title='{cur_title}' | Author='{cur_author}'\n"
+                    f"New Gemini:  Title='{new_title}' | Author='{new_author}'\n"
+                    f"Confidence: {confidence}\n"
+                    f"------------------------------------------\n"
+                )
                 
+                # Write to generic comparison report
+                try:
+                    with open(LOG_DIR / "comparison_report.txt", "a", encoding="utf-8") as rep:
+                        rep.write(comparison_msg)
+                except Exception as e:
+                    print(f"Warning: Failed to write comparison report: {e}")
+
                 trigger_abs_scan(abs_config['url'], abs_config['token'], item_id)
                 print("  [API] Scan triggered")
             else:
-                # Perhaps the folder isn't in ABS yet, or path mismatch
-                pass
+                print(f"  [API Warning] Could not find folder '{folder_name}' in ABS library map.")
         
     return True
 
@@ -230,6 +293,7 @@ def main():
     parser.add_argument("--abs-url", help="Audiobookshelf URL (e.g. http://localhost:13378)")
     parser.add_argument("--abs-token", help="Audiobookshelf API Token")
     parser.add_argument("--model", default="default", help="Gemini model to use (default: CLI default)")
+    parser.add_argument("--force", action="store_true", help="Overwrite existing metadata.json files")
     
     args = parser.parse_args()
     
@@ -289,7 +353,7 @@ def main():
                 msg = f"Skipping (mixed content?): {Path(root).name} contains {len(audio_files)} files with no common prefix."
                 print(msg)
                 try:
-                     with open("processing.log", "a", encoding="utf-8") as log_file:
+                     with open(LOG_DIR / "skipped_mixed_content.log", "a", encoding="utf-8") as log_file:
                         log_file.write(f"--- {datetime.datetime.now()} | {Path(root).name} | SKIPPED (Mixed content) ---\n")
                 except: pass
                 
@@ -314,7 +378,7 @@ def main():
         processed_final = 0
         with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
             # Submit all tasks
-            future_to_file = {executor.submit(process_file, f, args.dry_run, abs_config, args.model): f for f in tasks}
+            future_to_file = {executor.submit(process_file, f, args.dry_run, abs_config, args.model, args.force): f for f in tasks}
             
             for future in concurrent.futures.as_completed(future_to_file):
                 f = future_to_file[future]
