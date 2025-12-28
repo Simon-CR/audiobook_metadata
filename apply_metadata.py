@@ -156,6 +156,13 @@ def main():
         audio_files = [f for f in files if Path(f).suffix.lower() in AUDIO_EXTENSIONS]
         if not audio_files:
             continue
+            
+        # Safety Check: Skip folders with multiple .m4b files (likely flat library or multiple books)
+        m4b_files = [f for f in audio_files if Path(f).suffix.lower() == '.m4b']
+        if len(m4b_files) > 1:
+            print(f"Skipping (likely multiple books): {Path(root).name} contains {len(m4b_files)} .m4b files")
+            continue
+            
         first_audio = audio_files[0]
         full_path = Path(root) / first_audio
         tasks.append(full_path)
