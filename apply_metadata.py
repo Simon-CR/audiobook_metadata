@@ -55,7 +55,7 @@ def process_file(client, file_path, dry_run=False):
     
     if metadata_path.exists() and not dry_run:
         print(f"Skipping (metadata exists): {path.name}")
-        return
+        return False
 
     print(f"Processing: {path.name}...")
     
@@ -72,7 +72,7 @@ def process_file(client, file_path, dry_run=False):
         
         if not metadata:
              print(f"  Failed to parse JSON response for {path.name}")
-             return
+             return False
 
         if dry_run:
             print(f"  [DRY RUN] Generated metadata for {path.name}:")
@@ -84,14 +84,17 @@ def process_file(client, file_path, dry_run=False):
             
         # polite rate limiting
         time.sleep(1) 
+        return True
 
     except Exception as e:
         print(f"  Error processing {path.name}: {e}")
+        return False
 
 def main():
     parser = argparse.ArgumentParser(description="Generate Audiobookshelf metadata using Gemini API.")
     parser.add_argument("directory", nargs="?", default=".", help="Root directory to scan (default: current dir)")
     parser.add_argument("--dry-run", action="store_true", help="Print metadata to console instead of writing files")
+    parser.add_argument("--limit", type=int, default=0, help="Limit the number of books to process (0 for no limit)")
     
     args = parser.parse_args()
     
@@ -101,7 +104,14 @@ def main():
     if args.dry_run:
         print("Running in DRY RUN mode. No files will be modified.")
 
+    if args.dry_run:
+        print("Running in DRY RUN mode. No files will be modified.")
+    if args.limit > 0:
+        print(f"Limit set to {args.limit} books.")
+
     client = get_client()
+    
+    processed_count = 0
     
     # Walk through the directory
     for root, dirs, files in os.walk(root_dir):
@@ -125,7 +135,11 @@ def main():
         first_audio = audio_files[0]
         full_path = Path(root) / first_audio
         
-        process_file(client, full_path, dry_run=args.dry_run)
+        if process_file(client, full_path, dry_run=args.dry_run):
+            processed_count += 1
+            if args.limit > 0 and processed_count >= args.limit:
+                print(f"Limit of {args.limit} books reached. Stopping.")
+                break
 
 if __name__ == "__main__":
     main()
