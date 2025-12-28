@@ -95,8 +95,8 @@ def process_file(client, file_path, dry_run=False):
                 json.dump(metadata, f, indent=2, ensure_ascii=False)
             print(f"  Saved metadata.json")
             
-        # polite rate limiting
-        time.sleep(1) 
+        # polite rate limiting - 15 RPM = 1 req / 4 sec
+        time.sleep(4) 
         return True
 
     except RetryError as e:
