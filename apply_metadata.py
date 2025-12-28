@@ -172,18 +172,35 @@ def main():
         if not audio_files:
             continue
             
-        # Safety Check: Skip folders with multiple audio files (whatever the format)
-        # This prevents processing "flat" libraries where multiple books reside in one folder.
-        # Note: This effectively skips multi-part books (e.g. mp3 albums) for now.
-        if len(audio_files) > 1:
-            msg = f"Skipping (contains {len(audio_files)} audio files): {Path(root).name}"
-            print(msg)
-            try:
-                 with open("processing.log", "a", encoding="utf-8") as log_file:
-                    log_file.write(f"--- {datetime.datetime.now()} | {Path(root).name} | SKIPPED (Multiple files) ---\n")
-            except: pass
+        if not audio_files:
             continue
             
+        # Determine if this folder contains a single book (split into parts) or multiple different books
+        if len(audio_files) > 1:
+            common_prefix = os.path.commonprefix([f.name for f in audio_files])
+            
+            # Heuristic: 
+            # 1. If substantial common prefix (>4 chars), likely a single book (e.g. "Harry Potter - Ch1", "Harry Potter - Ch2")
+            # 2. If filenames are short/numeric (e.g. "01.mp3", "Start.mp3"), likely a single book unless folder is "Misc"
+            # 3. If folder name matches the start of files, likely a single book.
+            
+            is_single_book = False
+            if len(common_prefix) > 3:
+                is_single_book = True
+            elif all(len(f.stem) < 5 or f.stem.replace('_', '').replace('-', '').isdigit() for f in audio_files):
+                # Small filenames like 01.mp3, 1-01.mp3
+                is_single_book = True
+                
+            if not is_single_book:
+                msg = f"Skipping (mixed content/dump folder?): {Path(root).name} contains {len(audio_files)} files with no common prefix."
+                print(msg)
+                try:
+                     with open("processing.log", "a", encoding="utf-8") as log_file:
+                        log_file.write(f"--- {datetime.datetime.now()} | {Path(root).name} | SKIPPED (Mixed content) ---\n")
+                except: pass
+                continue
+        
+        # For multi-part books, the first file + folder name is usually sufficient context
         first_audio = audio_files[0]
         full_path = Path(root) / first_audio
         tasks.append(full_path)
