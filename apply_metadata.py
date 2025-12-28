@@ -4,6 +4,7 @@ import json
 import argparse
 import subprocess
 import shutil
+import concurrent.futures
 from pathlib import Path
 
 # Supported audio extensions for audiobooks
@@ -20,8 +21,8 @@ def check_dependencies():
 def generate_metadata_prompt(filename, folder_name):
     return f"""
     1. Identify the language of the audiobook based on the filename: "{filename}" and folder: "{folder_name}".
-    2. If the book appears to be French, search **Audible.fr**.
-    3. Otherwise, search **Audible.com**.
+    2. If the book appears to be French, search **Audible.fr** or **Audible.ca**.
+    3. Otherwise, search **Audible.com** or **Audible.ca**.
     4. If the book is not found on Audible, fallback to using general Google Search data or your internal knowledge to find the correct metadata.
     
     Extract the metadata and provide it in this specific JSON format for Audiobookshelf. 
@@ -148,21 +149,36 @@ def main():
 
     processed_count = 0
     
-    # Walk through the directory
+    
+    # Collect all audio files first
+    tasks = []
     for root, dirs, files in os.walk(root_dir):
         audio_files = [f for f in files if Path(f).suffix.lower() in AUDIO_EXTENSIONS]
-        
         if not audio_files:
             continue
-            
         first_audio = audio_files[0]
         full_path = Path(root) / first_audio
+        tasks.append(full_path)
         
-        if process_file(full_path, dry_run=args.dry_run):
-            processed_count += 1
-            if args.limit > 0 and processed_count >= args.limit:
-                print(f"Limit of {args.limit} books reached. Stopping.")
-                break
+    print(f"Found {len(tasks)} potential books.")
+    
+    # Process in parallel
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+        # Submit all tasks
+        future_to_file = {executor.submit(process_file, f, args.dry_run): f for f in tasks}
+        
+        for future in concurrent.futures.as_completed(future_to_file):
+            f = future_to_file[future]
+            try:
+                success = future.result()
+                if success:
+                    processed_count += 1
+                    if args.limit > 0 and processed_count >= args.limit:
+                        print(f"Limit of {args.limit} books reached. Stopping.")
+                        executor.shutdown(wait=False, cancel_futures=True)
+                        break
+            except Exception as exc:
+                print(f"Generated an exception for {f}: {exc}")
 
 if __name__ == "__main__":
     main()
