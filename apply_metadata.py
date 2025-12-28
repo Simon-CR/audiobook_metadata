@@ -172,10 +172,16 @@ def main():
         if not audio_files:
             continue
             
-        # Safety Check: Skip folders with multiple .m4b files (likely flat library or multiple books)
-        m4b_files = [f for f in audio_files if Path(f).suffix.lower() == '.m4b']
-        if len(m4b_files) > 1:
-            print(f"Skipping (likely multiple books): {Path(root).name} contains {len(m4b_files)} .m4b files")
+        # Safety Check: Skip folders with multiple audio files (whatever the format)
+        # This prevents processing "flat" libraries where multiple books reside in one folder.
+        # Note: This effectively skips multi-part books (e.g. mp3 albums) for now.
+        if len(audio_files) > 1:
+            msg = f"Skipping (contains {len(audio_files)} audio files): {Path(root).name}"
+            print(msg)
+            try:
+                 with open("processing.log", "a", encoding="utf-8") as log_file:
+                    log_file.write(f"--- {datetime.datetime.now()} | {Path(root).name} | SKIPPED (Multiple files) ---\n")
+            except: pass
             continue
             
         first_audio = audio_files[0]
