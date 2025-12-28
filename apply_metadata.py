@@ -52,21 +52,24 @@ def generate_metadata_prompt(filename, folder_name):
     Output ONLY the JSON block. Do not include markdown formatting like ```json ... ``` if possible, or I will filter it out.
     """
 
-def call_gemini_cli(prompt):
-    """Calls the gemini CLI with the given prompt and returns the stdout."""
+def call_gemini_cli(prompt, model=None):
+    """Calls Gemini CLI with the prompt and returns the output text."""
     try:
-        # We use strict mode or just simple prompt. 
-        # Quoting the prompt is handled by subprocess list args
-        # Note: If the CLI requires specific flags for better output, add them here.
+        # We use the CLI via subprocess
+        cmd = ["gemini", "prompt", prompt]
+        if model and model.lower() != "default":
+            cmd.extend(["--model", model])
+            
         result = subprocess.run(
-            ["gemini", prompt],
+            cmd,
             capture_output=True,
             text=True,
+            encoding='utf-8',
             check=True
         )
         return result.stdout
     except subprocess.CalledProcessError as e:
-        print(f"  Gemini CLI Error: {e.stderr}")
+        print(f"Error calling Gemini CLI: {e.stderr}")
         return None
     except Exception as e:
         print(f"  Subprocess Error: {e}")
@@ -126,7 +129,7 @@ def fetch_abs_library_map(url, token):
                 if 'path' in item:
                     # Normalize: resolve symlinks/absolute
                     abs_path = str(Path(item['path']).resolve())
-                    mapping[abs_path] = item['id']
+                    mapping[abs_path] = item # Store full item object
                     
         print(f"Mapped {len(mapping)} Audiobookshelf items.")
         return mapping
@@ -144,7 +147,7 @@ def trigger_abs_scan(url, token, item_id):
         print(f"  [API] Failed to trigger scan: {e}")
         return False
 
-def process_file(file_path, dry_run=False, abs_config=None):
+def process_file(file_path, dry_run=False, abs_config=None, model=None):
     # abs_config is a dict: {'url': str, 'token': str, 'map': dict}
     path = Path(file_path)
     directory = path.parent
@@ -159,11 +162,12 @@ def process_file(file_path, dry_run=False, abs_config=None):
     prompt = generate_metadata_prompt(path.name, directory.name)
     
     start_time = time.time()
-    raw_output = call_gemini_cli(prompt)
+    raw_output = call_gemini_cli(prompt, model=model)
     duration = time.time() - start_time
     
     # Log the interaction
-    log_entry = f"--- {datetime.datetime.now()} | {path.name} | took {duration:.2f}s ---\nPrompt: ...\nOutput:\n{raw_output}\n\n"
+    model_name = model if model else "default"
+    log_entry = f"--- {datetime.datetime.now()} | {path.name} | Model: {model_name} | took {duration:.2f}s ---\nPrompt: ...\nOutput:\n{raw_output}\n\n"
     try:
         with open("processing.log", "a", encoding="utf-8") as log_file:
             log_file.write(log_entry)
@@ -189,10 +193,27 @@ def process_file(file_path, dry_run=False, abs_config=None):
         print(f"  Saved metadata.json")
         
         # Trigger ABS Scan if configured
-        if abs_config and not dry_run:
+        if abs_config: # Removed 'and not dry_run' as dry_run is handled by the outer if/else
             dir_abs = str(directory.resolve())
             if dir_abs in abs_config['map']:
-                item_id = abs_config['map'][dir_abs]
+                item = abs_config['map'][dir_abs]
+                item_id = item['id']
+                
+                # Check current state
+                current_meta = item.get('media', {}).get('metadata', {})
+                cur_title = current_meta.get('title', '[Unknown]')
+                cur_author = current_meta.get('author', '[Unknown]')
+                
+                new_title = metadata.get('title', '[Unknown]')
+                new_author = ", ".join(metadata.get('authors', ['[Unknown]'])) # Assuming authors is a list
+                
+                print(f"  [ABS Comparison] ID: {item_id}")
+                print(f"    Current ABS: Title='{cur_title}' | Author='{cur_author}'")
+                print(f"    New Upload:  Title='{new_title}' | Author='{new_author}'")
+                
+                if cur_title != new_title or cur_author != new_author:
+                    print("    -> DETECTED DIFF: Updating metadata on server.")
+                
                 trigger_abs_scan(abs_config['url'], abs_config['token'], item_id)
                 print("  [API] Scan triggered")
             else:
@@ -208,6 +229,7 @@ def main():
     parser.add_argument("--limit", type=int, default=0, help="Limit the number of books to process (0 for no limit)")
     parser.add_argument("--abs-url", help="Audiobookshelf URL (e.g. http://localhost:13378)")
     parser.add_argument("--abs-token", help="Audiobookshelf API Token")
+    parser.add_argument("--model", default="default", help="Gemini model to use (default: CLI default)")
     
     args = parser.parse_args()
     
@@ -292,7 +314,7 @@ def main():
         processed_final = 0
         with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
             # Submit all tasks
-            future_to_file = {executor.submit(process_file, f, args.dry_run, abs_config): f for f in tasks}
+            future_to_file = {executor.submit(process_file, f, args.dry_run, abs_config, args.model): f for f in tasks}
             
             for future in concurrent.futures.as_completed(future_to_file):
                 f = future_to_file[future]
