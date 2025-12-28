@@ -6,6 +6,7 @@ import time
 from pathlib import Path
 from google import genai
 from google.genai import types
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 # Supported audio extensions for audiobooks
 AUDIO_EXTENSIONS = {'.m4b', '.mp3', '.m4a', '.flac', '.ogg'}
@@ -17,6 +18,18 @@ def get_client():
         print("Please export GEMINI_API_KEY='your_api_key'")
         sys.exit(1)
     return genai.Client(api_key=api_key)
+
+@retry(
+    retry=retry_if_exception_type(Exception), # Ideally we'd catch specific API error types for 429
+    wait=wait_exponential(multiplier=1, min=4, max=60),
+    stop=stop_after_attempt(5)
+)
+def generate_content_with_retry(client, contents, config):
+    return client.models.generate_content(
+        model='gemini-2.0-flash-exp',
+        contents=contents,
+        config=config
+    )
 
 def generate_metadata_prompt(filename, folder_name):
     return f"""
@@ -60,8 +73,8 @@ def process_file(client, file_path, dry_run=False):
     print(f"Processing: {path.name}...")
     
     try:
-        response = client.models.generate_content(
-            model='gemini-2.0-flash-exp',
+        response = generate_content_with_retry(
+            client=client,
             contents=generate_metadata_prompt(path.name, directory.name),
             config=types.GenerateContentConfig(
                 response_mime_type='application/json'
@@ -101,9 +114,6 @@ def main():
     root_dir = Path(args.directory).resolve()
     print(f"Scanning directory: {root_dir}")
     
-    if args.dry_run:
-        print("Running in DRY RUN mode. No files will be modified.")
-
     if args.dry_run:
         print("Running in DRY RUN mode. No files will be modified.")
     if args.limit > 0:
