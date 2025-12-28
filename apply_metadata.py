@@ -7,7 +7,7 @@ import shutil
 from pathlib import Path
 
 # Supported audio extensions for audiobooks
-AUDIO_EXTENSIONS = {'.m4b', '.mp3', '.m4a', '.flac', '.ogg'}
+AUDIO_EXTENSIONS = {'.m4b', '.mp3', '.m4a', '.flac', '.ogg', '.wav', '.wma', '.aac'}
 
 def check_dependencies():
     """Checks if 'gemini' CLI is installed."""
